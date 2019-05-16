@@ -1,0 +1,120 @@
+<!
+//  LightingModel.slh
+//  fragment shader
+//
+//  Created by Sam Gateau on 1/25/14.
+//  Copyright 2013 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+!>
+<@if not LIGHTING_MODEL_SLH@>
+<@def LIGHTING_MODEL_SLH@>
+
+<@include render-utils/ShaderConstants.h@>
+<@func declareLightingModel()@>
+
+struct LightingModel {
+    vec4 _UnlitEmissiveLightmapBackground;
+    vec4 _ScatteringDiffuseSpecularAlbedo;
+    vec4 _AmbientDirectionalPointSpot;
+    vec4 _ShowContourObscuranceWireframe;
+    vec4 _HazeBloomSkinningBlendshape;
+};
+
+// See DeferredShader_BufferSlot in DeferredLightingEffect.cpp
+LAYOUT(binding=RENDER_UTILS_BUFFER_LIGHT_MODEL) uniform lightingModelBuffer{
+    LightingModel lightingModel;
+};
+
+float isUnlitEnabled() {
+    return lightingModel._UnlitEmissiveLightmapBackground.x;
+}
+float isEmissiveEnabled() {
+    return lightingModel._UnlitEmissiveLightmapBackground.y;
+}
+float isLightmapEnabled() {
+    return lightingModel._UnlitEmissiveLightmapBackground.z;
+}
+float isBackgroundEnabled() {
+    return lightingModel._UnlitEmissiveLightmapBackground.w;
+}
+float isObscuranceEnabled() {
+    return lightingModel._ShowContourObscuranceWireframe.y;
+}
+
+float isScatteringEnabled() {
+    return lightingModel._ScatteringDiffuseSpecularAlbedo.x;
+}
+float isDiffuseEnabled() {
+    return lightingModel._ScatteringDiffuseSpecularAlbedo.y;
+}
+float isSpecularEnabled() {
+    return lightingModel._ScatteringDiffuseSpecularAlbedo.z;
+}
+float isAlbedoEnabled() {
+    return lightingModel._ScatteringDiffuseSpecularAlbedo.w;
+}
+
+float isAmbientEnabled() {
+    return lightingModel._AmbientDirectionalPointSpot.x;
+}
+float isDirectionalEnabled() {
+    return lightingModel._AmbientDirectionalPointSpot.y;
+}
+float isPointEnabled() {
+    return lightingModel._AmbientDirectionalPointSpot.z;
+}
+float isSpotEnabled() {
+    return lightingModel._AmbientDirectionalPointSpot.w;
+}
+
+float isShowLightContour() {
+    return lightingModel._ShowContourObscuranceWireframe.x;
+}
+
+float isWireframeEnabled() {
+    return lightingModel._ShowContourObscuranceWireframe.z;
+}
+
+float isHazeEnabled() {
+    return lightingModel._HazeBloomSkinningBlendshape.x;
+}
+float isBloomEnabled() {
+    return lightingModel._HazeBloomSkinningBlendshape.y;
+}
+float isSkinningEnabled() {
+    return lightingModel._HazeBloomSkinningBlendshape.z;
+}
+float isBlendshapeEnabled() {
+    return lightingModel._HazeBloomSkinningBlendshape.w;
+}
+
+<@endfunc@>
+<$declareLightingModel()$>
+
+struct SurfaceData {
+    vec3 normal;
+    vec3 eyeDir;
+    vec3 lightDir;
+    vec3 halfDir;
+    float roughness;
+    float roughness2;
+    float roughness4;
+    float ndotv;
+    float ndotl;
+    float ndoth;
+    float ldoth;
+    float smithInvG1NdotV;
+};
+
+<@if not GETFRESNEL0@>
+<@def GETFRESNEL0@>
+vec3 getFresnelF0(float metallic, vec3 metalF0) {
+    // Enable continuous metallness value by lerping between dielectric
+    // and metal fresnel F0 value based on the "metallic" parameter
+    return mix(vec3(0.03), metalF0, metallic);
+}
+<@endif@>
+
+<@endif@>

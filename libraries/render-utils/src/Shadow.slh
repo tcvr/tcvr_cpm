@@ -1,0 +1,145 @@
+<!
+//  Shadow.slh
+//  libraries/render-utils/src
+//
+//  Created by Sam Gateau on 1/4/15.
+//  Copyright 2013 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+!>
+<@if not SHADOW_SLH@>
+<@def SHADOW_SLH@>
+
+<@include render-utils/ShaderConstants.h@>
+<@include ShadowCore.slh@>
+
+#define SHADOW_DITHER                   1
+#define SHADOW_NOISE_ENABLED            0
+#define SHADOW_SCREEN_SPACE_DITHER      1
+
+// the shadow texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_SHADOW) uniform sampler2DArrayShadow shadowMaps;
+
+// Sample the shadowMap with PCF (built-in)
+float fetchShadow(int cascadeIndex, vec3 shadowTexcoord) {
+    return texture(shadowMaps, vec4(shadowTexcoord.xy, cascadeIndex, shadowTexcoord.z));
+}
+
+vec2 PCFkernel[4] = vec2[4](
+    vec2(-1.5, 0.5),
+    vec2(0.5, 0.5),
+    vec2(-1.5, -1.5),
+    vec2(0.5, -1.5)
+);
+
+#if SHADOW_NOISE_ENABLED
+float evalShadowNoise(vec4 seed) {
+    float dot_product = dot(seed, vec4(12.9898,78.233,45.164,94.673));
+    return fract(sin(dot_product) * 43758.5453);
+}
+#endif
+
+struct ShadowSampleOffsets {
+    vec3 points[4];
+};
+
+ShadowSampleOffsets evalShadowFilterOffsets(vec4 position) {
+    float shadowScale = getShadowScale();
+    ShadowSampleOffsets offsets;
+
+#if SHADOW_SCREEN_SPACE_DITHER
+    // Pattern dithering in screen space
+    ivec2 coords = ivec2(gl_FragCoord.xy);
+#else
+    // Pattern dithering in world space (mm resolution)
+    ivec2 coords = ivec2(position.x, position.y+position.z);
+#endif
+
+#if SHADOW_NOISE_ENABLED
+    // Add some noise to break dithering
+    int index = int(4.0*evalShadowNoise(gl_FragCoord.xyyx))%4;
+    coords.x += index & 1;
+    coords.y += (index & 2) >> 1;
+#endif
+
+    // Offset for efficient PCF, see http://http.developer.nvidia.com/GPUGems/gpugems_ch11.html
+    ivec2 offset = coords & ivec2(1,1);
+    offset.y = (offset.x+offset.y) & 1;
+
+    offsets.points[0] = shadowScale * vec3(vec2(offset) + PCFkernel[0], 0.0);
+    offsets.points[1] = shadowScale * vec3(vec2(offset) + PCFkernel[1], 0.0);
+    offsets.points[2] = shadowScale * vec3(vec2(offset) + PCFkernel[2], 0.0);
+    offsets.points[3] = shadowScale * vec3(vec2(offset) + PCFkernel[3], 0.0);
+
+    return offsets;
+}
+
+float evalShadowAttenuationPCF(int cascadeIndex, ShadowSampleOffsets offsets, vec4 shadowTexcoord, float bias) {
+    shadowTexcoord.z -= bias;
+#if SHADOW_DITHER
+    float shadowAttenuation = 0.25 * (
+        fetchShadow(cascadeIndex, shadowTexcoord.xyz + offsets.points[0]) +
+        fetchShadow(cascadeIndex, shadowTexcoord.xyz + offsets.points[1]) +
+        fetchShadow(cascadeIndex, shadowTexcoord.xyz + offsets.points[2]) +
+        fetchShadow(cascadeIndex, shadowTexcoord.xyz + offsets.points[3])
+    );
+#else
+    float shadowAttenuation = fetchShadow(cascadeIndex, shadowTexcoord.xyz);
+#endif
+    return shadowAttenuation;
+}
+
+float evalShadowCascadeAttenuation(int cascadeIndex, ShadowSampleOffsets offsets, vec4 shadowTexcoord, float oneMinusNdotL) {
+    float bias = getShadowFixedBias(cascadeIndex) + getShadowSlopeBias(cascadeIndex) * oneMinusNdotL;
+    return evalShadowAttenuationPCF(cascadeIndex, offsets, shadowTexcoord, bias);
+}
+
+float evalShadowAttenuation(vec3 worldLightDir, vec4 worldPosition, float viewDepth, vec3 worldNormal) {
+    ShadowSampleOffsets offsets = evalShadowFilterOffsets(worldPosition);
+
+    vec4 cascadeShadowCoords[4];
+    vec4 cascadeWeights;
+    vec4 cascadeAttenuations = vec4(1.0);
+    vec3 cascadeMix;
+    bvec4 isPixelOnCascade;
+    int cascadeIndex;
+    float oneMinusNdotL = 1.0 - clamp(dot(worldLightDir, worldNormal), 0.0, 1.0);
+
+    for (cascadeIndex=0 ; cascadeIndex<getShadowCascadeCount() ; cascadeIndex++) {
+        cascadeShadowCoords[cascadeIndex] = evalShadowTexcoord(cascadeIndex, worldPosition);
+    }
+
+    isPixelOnCascade.x = isShadowCascadeProjectedOnPixel(cascadeShadowCoords[0]);
+    isPixelOnCascade.y = isShadowCascadeProjectedOnPixel(cascadeShadowCoords[1]);
+    isPixelOnCascade.z = isShadowCascadeProjectedOnPixel(cascadeShadowCoords[2]);
+    isPixelOnCascade.w = isShadowCascadeProjectedOnPixel(cascadeShadowCoords[3]);
+
+    cascadeAttenuations.x = mix(1.0, evalShadowCascadeAttenuation(0, offsets, cascadeShadowCoords[0], oneMinusNdotL), float(isPixelOnCascade.x));
+    cascadeAttenuations.y = mix(1.0, evalShadowCascadeAttenuation(1, offsets, cascadeShadowCoords[1], oneMinusNdotL), float(isPixelOnCascade.y));
+    cascadeAttenuations.z = mix(1.0, evalShadowCascadeAttenuation(2, offsets, cascadeShadowCoords[2], oneMinusNdotL), float(isPixelOnCascade.z));
+    cascadeAttenuations.w = mix(1.0, evalShadowCascadeAttenuation(3, offsets, cascadeShadowCoords[3], oneMinusNdotL), float(isPixelOnCascade.w));
+
+    cascadeWeights.x = evalShadowCascadeWeight(cascadeShadowCoords[0]);
+    cascadeWeights.y = evalShadowCascadeWeight(cascadeShadowCoords[1]);
+    cascadeWeights.z = evalShadowCascadeWeight(cascadeShadowCoords[2]);
+    cascadeWeights.w = evalShadowCascadeWeight(cascadeShadowCoords[3]);
+    cascadeWeights = mix(vec4(0.0), cascadeWeights, isPixelOnCascade);
+
+    cascadeMix.x = evalCascadeMix(cascadeWeights.x, cascadeWeights.y);
+    cascadeMix.y = evalCascadeMix(cascadeWeights.y, cascadeWeights.z);
+    cascadeMix.z = evalCascadeMix(cascadeWeights.z, cascadeWeights.w);
+
+    vec3 attenuations = mix(cascadeAttenuations.xyz, cascadeAttenuations.yzw, cascadeMix.xyz);
+
+    attenuations.x = mix(1.0, attenuations.x, isPixelOnCascade.x);
+    attenuations.y = mix(1.0, attenuations.y, !isPixelOnCascade.x && isPixelOnCascade.y);
+    attenuations.z = mix(1.0, attenuations.z, !any(isPixelOnCascade.xy) && any(isPixelOnCascade.zw));
+
+    float attenuation = min(attenuations.x, min(attenuations.y, attenuations.z));
+
+    // Falloff to max distance
+    return mix(1.0, attenuation, evalShadowFalloff(viewDepth));
+}
+
+<@endif@>

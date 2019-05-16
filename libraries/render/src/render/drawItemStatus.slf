@@ -1,0 +1,30 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//  drawItemStatus.frag
+//  fragment shader
+//
+//  Created by Sam Gateau on 6/30/15.
+//  Copyright 2015 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+layout(location=0) in vec4 varColor;
+layout(location=1) in vec3 varTexcoord;
+layout(location=0) out vec4 outFragColor;
+
+LAYOUT(binding=0) uniform sampler2D _icons;
+vec2 getIconTexcoord(float icon, vec2 uv) {
+    const vec2 ICON_COORD_SIZE = vec2(0.0625, 1.0);
+    return vec2((uv.x + icon) * ICON_COORD_SIZE.x, uv.y * ICON_COORD_SIZE.y);
+}
+
+void main(void) {
+    vec2 centerDir = varTexcoord.xy * 2.0f - 1.0f;
+    
+    outFragColor = mix(vec4(varColor.xyz, 1.0 - step(1.0f, dot(centerDir.xy, centerDir.xy))),
+                       texture(_icons, getIconTexcoord(varTexcoord.z, varTexcoord.xy)) * varColor,
+                       float(varTexcoord.z < 254.5));
+}

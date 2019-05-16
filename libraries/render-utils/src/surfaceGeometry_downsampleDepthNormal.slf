@@ -1,0 +1,48 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//
+// surfaceGeometry_downsampleDepthNormal.frag
+//
+//  Created by Sam Gateau on 6/3/16.
+//  Copyright 2016 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+
+<@include gpu/PackedNormal.slh@>
+<@include render-utils/ShaderConstants.h@>
+
+LAYOUT(binding=RENDER_UTILS_TEXTURE_SG_DEPTH) uniform sampler2D linearDepthMap;
+LAYOUT(binding=RENDER_UTILS_TEXTURE_SG_NORMAL) uniform sampler2D normalMap;
+
+layout(location=0) in vec2 varTexCoord0;
+
+layout(location=0) out vec4 outLinearDepth;
+layout(location=1) out vec4 outNormal;
+
+void main(void) {
+    // Gather 2 by 2 quads from texture and downsample
+
+    vec4 Zeyes = textureGather(linearDepthMap, varTexCoord0, 0);
+
+    vec4 rawNormalsX = textureGather(normalMap, varTexCoord0, 0);
+    vec4 rawNormalsY = textureGather(normalMap, varTexCoord0, 1);
+    vec4 rawNormalsZ = textureGather(normalMap, varTexCoord0, 2);
+
+    float Zeye = min(min(Zeyes.x, Zeyes.y), min(Zeyes.z, Zeyes.w));
+
+    vec3 normal = vec3(0.0);
+    normal += unpackNormal(vec3(rawNormalsX[0], rawNormalsY[0], rawNormalsZ[0]));
+    normal += unpackNormal(vec3(rawNormalsX[1], rawNormalsY[1], rawNormalsZ[1]));
+    normal += unpackNormal(vec3(rawNormalsX[2], rawNormalsY[2], rawNormalsZ[2]));
+    normal += unpackNormal(vec3(rawNormalsX[3], rawNormalsY[3], rawNormalsZ[3]));
+
+    normal = normalize(normal);
+
+    outLinearDepth = vec4(Zeye, 0.0, 0.0, 0.0);
+    outNormal = vec4((normal + vec3(1.0)) * 0.5, 0.0);
+}
+

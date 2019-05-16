@@ -1,0 +1,35 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//
+//  standardTransformPNTC.vert
+//  vertex shader
+//
+//  Created by Sam Gateau on 6/10/2015.
+//  Copyright 2015 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+<@include gpu/Inputs.slh@>
+<@include gpu/Color.slh@>
+<@include gpu/Transform.slh@>
+<$declareStandardTransform()$>
+
+layout(location=GPU_ATTR_POSITION) out vec3 varPosition;
+layout(location=GPU_ATTR_NORMAL) out vec3 varNormal;
+layout(location=GPU_ATTR_TEXCOORD0) out vec2 varTexCoord0;
+layout(location=GPU_ATTR_COLOR) out vec4 varColor;
+
+void main(void) {
+    varTexCoord0 = inTexCoord0.st;
+    varColor = color_sRGBAToLinear(inColor);
+    
+    // standard transform
+    TransformCamera cam = getTransformCamera();
+    TransformObject obj = getTransformObject();
+    <$transformModelToClipPos(cam, obj, inPosition, gl_Position)$>
+    <$transformModelToWorldDir(cam, obj, inNormal.xyz, varNormal)$>
+    varPosition = inPosition.xyz;
+}

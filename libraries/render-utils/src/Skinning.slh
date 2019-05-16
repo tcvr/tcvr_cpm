@@ -1,0 +1,162 @@
+<!
+//  Skinning.slh
+//  libraries/render-utils/src
+//
+//  Created by Sam Gateau on 10/5/15.
+//  Copyright 2013 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+!>
+<@if not SKINNING_SLH@>
+<@def SKINNING_SLH@>
+
+<@include graphics/ShaderConstants.h@>
+
+<@func declareSkinning(USE_DUAL_QUATERNION_SKINNING, USE_NORMAL, USE_TANGENT)@>
+
+const int MAX_CLUSTERS = 128;
+const int INDICES_PER_VERTEX = 4;
+
+LAYOUT_STD140(binding=GRAPHICS_BUFFER_SKINNING) uniform skinClusterBuffer {
+    mat4 clusterMatrices[MAX_CLUSTERS];
+};
+
+<@if USE_DUAL_QUATERNION_SKINNING@>
+
+mat4 dualQuatToMat4(vec4 real, vec4 dual) {
+    float twoRealXSq = 2.0 * real.x * real.x;
+    float twoRealYSq = 2.0 * real.y * real.y;
+    float twoRealZSq = 2.0 * real.z * real.z;
+    float twoRealXY = 2.0 * real.x * real.y;
+    float twoRealXZ = 2.0 * real.x * real.z;
+    float twoRealXW = 2.0 * real.x * real.w;
+    float twoRealZW = 2.0 * real.z * real.w;
+    float twoRealYZ = 2.0 * real.y * real.z;
+    float twoRealYW = 2.0 * real.y * real.w;
+    vec4 col0 = vec4(1.0 - twoRealYSq - twoRealZSq,
+                     twoRealXY + twoRealZW,
+                     twoRealXZ - twoRealYW,
+                     0.0);
+    vec4 col1 = vec4(twoRealXY - twoRealZW,
+                     1.0 - twoRealXSq - twoRealZSq,
+                     twoRealYZ + twoRealXW,
+                     0.0);
+    vec4 col2 = vec4(twoRealXZ + twoRealYW,
+                     twoRealYZ - twoRealXW,
+                     1.0 - twoRealXSq - twoRealYSq,
+                     0.0);
+    vec4 col3 = vec4(2.0 * (-dual.w * real.x + dual.x * real.w - dual.y * real.z + dual.z * real.y),
+                     2.0 * (-dual.w * real.y + dual.x * real.z + dual.y * real.w - dual.z * real.x),
+                     2.0 * (-dual.w * real.z - dual.x * real.y + dual.y * real.x + dual.z * real.w),
+                     1.0);
+
+    return mat4(col0, col1, col2, col3);
+}
+
+// dual quaternion linear blending
+void evalSkinning(ivec4 skinClusterIndex, vec4 skinClusterWeight, vec4 inPosition, out vec4 skinnedPosition
+<@if USE_NORMAL@>
+    , vec3 inNormal, out vec3 skinnedNormal
+<@endif@>
+<@if USE_TANGENT@>
+    , vec3 inTangent, out vec3 skinnedTangent
+<@endif@>
+) {
+
+    // linearly blend scale and dual quaternion components
+    vec4 sAccum = vec4(0.0, 0.0, 0.0, 0.0);
+    vec4 rAccum = vec4(0.0, 0.0, 0.0, 0.0);
+    vec4 dAccum = vec4(0.0, 0.0, 0.0, 0.0);
+    vec4 cAccum = vec4(0.0, 0.0, 0.0, 0.0);
+    vec4 polarityReference = clusterMatrices[skinClusterIndex[0]][1];
+    for (int i = 0; i < INDICES_PER_VERTEX; i++) {
+        mat4 clusterMatrix = clusterMatrices[(skinClusterIndex[i])];
+        float clusterWeight = skinClusterWeight[i];
+
+        vec4 scale = clusterMatrix[0];
+        vec4 real = clusterMatrix[1];
+        vec4 dual = clusterMatrix[2];
+        vec4 cauterizedPos = clusterMatrix[3];
+
+        // to ensure that we rotate along the shortest arc, reverse dual quaternions with negative polarity.
+        float dqClusterWeight = clusterWeight;
+        dqClusterWeight *= mix(1.0, -1.0, float(dot(real, polarityReference) < 0.0));
+
+        sAccum += scale * clusterWeight;
+        rAccum += real * dqClusterWeight;
+        dAccum += dual * dqClusterWeight;
+        cAccum += cauterizedPos * clusterWeight;
+    }
+
+    // normalize dual quaternion
+    float norm = length(rAccum);
+    rAccum /= norm;
+    dAccum /= norm;
+
+    // conversion from dual quaternion to 4x4 matrix.
+    mat4 m = dualQuatToMat4(rAccum, dAccum);
+
+    // sAccum.w indicates the amount of cauterization for this vertex.
+    // 0 indicates no cauterization and 1 indicates full cauterization.
+    // TODO: make this cauterization smoother or implement full dual-quaternion scale support.
+    {
+        const float CAUTERIZATION_THRESHOLD = 0.1;
+        float check = float(sAccum.w > CAUTERIZATION_THRESHOLD);
+        sAccum.w = mix(1.0, sAccum.w, check);
+        skinnedPosition = mix(m * (sAccum * inPosition), cAccum, check);
+    }
+
+ <@if USE_NORMAL@>
+    skinnedNormal = vec3(m * vec4(inNormal, 0));
+<@endif@>
+<@if USE_TANGENT@>
+    skinnedTangent = vec3(m * vec4(inTangent, 0));
+<@endif@>
+}
+
+<@else@>  // NOT USE_DUAL_QUATERNION_SKINNING
+
+// LiNEAR BLENDING
+void evalSkinning(ivec4 skinClusterIndex, vec4 skinClusterWeight, vec4 inPosition, out vec4 skinnedPosition
+<@if USE_NORMAL@>
+    , vec3 inNormal, out vec3 skinnedNormal
+<@endif@>
+<@if USE_TANGENT@>
+    , vec3 inTangent, out vec3 skinnedTangent
+<@endif@>
+) {
+    vec4 newPosition = vec4(0.0, 0.0, 0.0, 0.0);
+<@if USE_NORMAL@>
+    vec4 newNormal = vec4(0.0, 0.0, 0.0, 0.0);
+<@endif@>
+<@if USE_TANGENT@>
+    vec4 newTangent = vec4(0.0, 0.0, 0.0, 0.0);
+<@endif@>
+
+    for (int i = 0; i < INDICES_PER_VERTEX; i++) {
+        mat4 clusterMatrix = clusterMatrices[(skinClusterIndex[i])];
+        float clusterWeight = skinClusterWeight[i];
+        newPosition += clusterMatrix * inPosition * clusterWeight;
+<@if USE_NORMAL@>
+        newNormal += clusterMatrix * vec4(inNormal.xyz, 0.0) * clusterWeight;
+<@endif@>
+<@if USE_TANGENT@>
+        newTangent += clusterMatrix * vec4(inTangent.xyz, 0.0) * clusterWeight;
+<@endif@>
+    }
+
+    skinnedPosition = newPosition;
+<@if USE_NORMAL@>
+    skinnedNormal = newNormal.xyz;
+<@endif@>
+<@if USE_TANGENT@>
+    skinnedTangent = newTangent.xyz;
+<@endif@>
+}
+
+<@endif@> // if USE_DUAL_QUATERNION_SKINNING
+
+<@endfunc@> // func declareSkinning()
+
+<@endif@> // if not SKINNING_SLH

@@ -1,0 +1,75 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//
+//  deferred_light_limited.vert
+//  vertex shader
+//
+//  Created by Sam Gateau on 6/16/16.
+//  Copyright 2014 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+<@include gpu/Transform.slh@>
+<@include gpu/Inputs.slh@>
+<@include render-utils/ShaderConstants.h@>
+
+<$declareStandardTransform()$>
+
+// FIXME make into a uniform buffer or push constant if this shader ever comes into use
+vec4 sphereParam = vec4(0.0);
+
+layout(location=RENDER_UTILS_ATTR_TEXCOORD01) out vec4 _texCoord01;
+
+void main(void) {
+    if (sphereParam.w != 0.0) {
+        
+        // standard transform
+        TransformCamera cam = getTransformCamera();
+        TransformObject obj = getTransformObject();
+        <$transformModelToClipPos(cam, obj, inPosition, gl_Position)$>;
+
+        vec4 projected = gl_Position / gl_Position.w;
+        projected.xy = (projected.xy + 1.0) * 0.5;
+
+#ifdef GPU_TRANSFORM_IS_STEREO
+#ifdef GPU_TRANSFORM_STEREO_SPLIT_SCREEN
+#else
+        projected.x = mix(projected.x, 0.5 * (projected.x + cam_getStereoSide()), float(cam_isStereo()));
+#endif
+#endif
+        _texCoord01 = vec4(projected.xy, 0.0, 1.0) * gl_Position.w;
+    } else {
+        const float depth = -1.0; //Draw at near plane
+        const vec4 UNIT_QUAD[4] = vec4[4](
+            vec4(-1.0, -1.0, depth, 1.0),
+            vec4(1.0, -1.0, depth, 1.0),
+            vec4(-1.0, 1.0, depth, 1.0),
+            vec4(1.0, 1.0, depth, 1.0)
+        );
+        vec4 pos = UNIT_QUAD[gl_VertexID];
+
+
+#ifdef GPU_TRANSFORM_IS_STEREO
+#ifdef GPU_TRANSFORM_STEREO_SPLIT_SCREEN
+        TransformCamera cam = getTransformCamera();
+        <$transformStereoClipsSpace(cam, pos)$>
+#endif
+#endif
+
+        _texCoord01 = vec4((pos.xy + 1.0) * 0.5, 0.0, 1.0);
+
+#ifdef GPU_TRANSFORM_IS_STEREO
+#ifdef GPU_TRANSFORM_STEREO_SPLIT_SCREEN
+#else
+        _texCoord01.x = mix(_texCoord01.x, 0.5 * (_texCoord01.x + cam_getStereoSide()), float(cam_isStereo()));
+#endif
+#endif
+
+        gl_Position = pos;
+
+    }
+
+}

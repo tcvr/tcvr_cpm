@@ -1,0 +1,298 @@
+<!
+//  gpu/TransformState.slh
+//
+//  Created by Sam Gateau on 2/10/15.
+//  Copyright 2013 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+!>
+<@if not GPU_TRANSFORM_STATE_SLH@>
+<@def GPU_TRANSFORM_STATE_SLH@>
+
+<@include gpu/ShaderConstants.h@>
+<@func declareStandardCameraTransform()@>
+<@include gpu/TransformCamera_shared.slh@>
+
+#define TransformCamera _TransformCamera
+
+LAYOUT_STD140(binding=GPU_BUFFER_TRANSFORM_CAMERA) uniform transformCameraBuffer {
+#ifdef GPU_TRANSFORM_IS_STEREO
+#ifdef GPU_TRANSFORM_STEREO_CAMERA
+    TransformCamera _camera[2];
+#else
+    TransformCamera _camera;
+#endif
+#else
+    TransformCamera _camera;
+#endif
+} _cameraBlock;
+
+#ifdef GPU_VERTEX_SHADER
+#ifdef GPU_TRANSFORM_IS_STEREO
+#ifdef GPU_TRANSFORM_STEREO_CAMERA
+#ifdef GPU_TRANSFORM_STEREO_CAMERA_ATTRIBUTED
+layout(location=GPU_ATTR_STEREO_SIDE) in int _inStereoSide;
+#endif
+
+layout(location=GPU_ATTR_V2F_STEREO_SIDE) flat out int _stereoSide;
+
+// In stereo drawcall mode Instances are drawn twice (left then right) hence the true InstanceID is the gl_InstanceID / 2
+int gpu_InstanceID() {
+    return gl_InstanceID >> 1;
+}
+
+#else
+
+int gpu_InstanceID() {
+    return gl_InstanceID;
+}
+#endif
+#else
+
+int gpu_InstanceID() {
+    return gl_InstanceID;
+}
+
+#endif
+
+#endif
+
+#ifdef GPU_PIXEL_SHADER
+#ifdef GPU_TRANSFORM_STEREO_CAMERA
+layout(location=GPU_ATTR_V2F_STEREO_SIDE) flat in int _stereoSide;
+#endif
+#endif
+
+
+TransformCamera getTransformCamera() {
+#ifdef GPU_TRANSFORM_IS_STEREO
+    #ifdef GPU_TRANSFORM_STEREO_CAMERA
+        #ifdef GPU_VERTEX_SHADER
+            #ifdef GPU_TRANSFORM_STEREO_CAMERA_ATTRIBUTED
+                _stereoSide = _inStereoSide;
+            #endif
+            #ifdef GPU_TRANSFORM_STEREO_CAMERA_INSTANCED
+                _stereoSide = gl_InstanceID % 2;
+            #endif
+        #endif
+        return _cameraBlock._camera[_stereoSide];
+    #else
+        return _cameraBlock._camera;
+    #endif
+#else
+    return _cameraBlock._camera;
+#endif
+}
+
+vec3 getEyeWorldPos() {
+    return getTransformCamera()._viewInverse[3].xyz;
+}
+
+bool cam_isStereo() {
+#ifdef GPU_TRANSFORM_IS_STEREO
+    return getTransformCamera()._stereoInfo.x > 0.0;
+#else
+    return _cameraBlock._camera._stereoInfo.x > 0.0;
+#endif
+}
+
+float cam_getStereoSide() {
+#ifdef GPU_TRANSFORM_IS_STEREO
+#ifdef GPU_TRANSFORM_STEREO_CAMERA
+    return getTransformCamera()._stereoInfo.y;
+#else
+    return _cameraBlock._camera._stereoInfo.y;
+#endif
+#else
+    return _cameraBlock._camera._stereoInfo.y;
+#endif
+}
+
+<@endfunc@>
+
+<@func declareStandardObjectTransform()@>
+struct TransformObject {
+    mat4 _model;
+    mat4 _modelInverse;
+};
+
+layout(location=GPU_ATTR_DRAW_CALL_INFO) in ivec2 _drawCallInfo;
+
+#if defined(GPU_SSBO_TRANSFORM_OBJECT)
+LAYOUT_STD140(binding=GPU_STORAGE_TRANSFORM_OBJECT) buffer transformObjectBuffer {
+    TransformObject _object[];
+};
+TransformObject getTransformObject() {
+    TransformObject transformObject = _object[_drawCallInfo.x];
+    return transformObject;
+}
+#else
+LAYOUT(binding=GPU_TEXTURE_TRANSFORM_OBJECT) uniform samplerBuffer transformObjectBuffer;
+
+TransformObject getTransformObject() {
+    int offset = 8 * _drawCallInfo.x;
+    TransformObject object;
+    object._model[0] = texelFetch(transformObjectBuffer, offset);
+    object._model[1] = texelFetch(transformObjectBuffer, offset + 1);
+    object._model[2] = texelFetch(transformObjectBuffer, offset + 2);
+    object._model[3] = texelFetch(transformObjectBuffer, offset + 3);
+
+    object._modelInverse[0] = texelFetch(transformObjectBuffer, offset + 4);
+    object._modelInverse[1] = texelFetch(transformObjectBuffer, offset + 5);
+    object._modelInverse[2] = texelFetch(transformObjectBuffer, offset + 6);
+    object._modelInverse[3] = texelFetch(transformObjectBuffer, offset + 7);
+
+    return object;
+}
+#endif
+
+<@endfunc@>
+
+
+<@func declareStandardTransform()@>
+<$declareStandardCameraTransform()$>
+<$declareStandardObjectTransform()$>
+<@endfunc@>
+
+<@func transformCameraViewport(cameraTransform, viewport)@>
+     <$viewport$> = <$cameraTransform$>._viewport;
+<@endfunc@>
+
+<@func transformStereoClipsSpace(cameraTransform, clipPos)@>
+    {
+#ifdef GPU_TRANSFORM_IS_STEREO
+
+#ifdef GPU_TRANSFORM_STEREO_SPLIT_SCREEN
+        vec4 eyeClipEdge[2]= vec4[2](vec4(-1,0,0,1), vec4(1,0,0,1));
+        vec2 eyeOffsetScale = vec2(-0.5, +0.5);
+        uint eyeIndex = uint(_stereoSide);
+#if !defined(GPU_GLES) || (defined(HAVE_EXT_clip_cull_distance) && !defined(VULKAN))
+        gl_ClipDistance[0] = dot(<$clipPos$>, eyeClipEdge[eyeIndex]);
+#endif
+        float newClipPosX = <$clipPos$>.x * 0.5 + eyeOffsetScale[eyeIndex] * <$clipPos$>.w;
+        <$clipPos$>.x = newClipPosX;
+#endif
+
+#else
+#endif
+    }
+<@endfunc@>
+
+
+<@func transformModelToEyeWorldAlignedPos(cameraTransform, objectTransform, modelPos, eyeWorldAlignedPos)@>
+    <!// Bring the model pos in the world aligned space centered on the eye axis !>
+    { // _transformModelToEyeWorldAlignedPos
+        highp mat4 _mv = <$objectTransform$>._model;
+        _mv[3].xyz -= <$cameraTransform$>._viewInverse[3].xyz;
+        highp vec4 _eyeWApos = (_mv * <$modelPos$>);
+        <$eyeWorldAlignedPos$> = _eyeWApos;
+    }
+<@endfunc@>
+
+<@func transformModelToMonoClipPos(cameraTransform, objectTransform, modelPos, clipPos)@>
+    { // transformModelToMonoClipPos
+        vec4 eyeWAPos;
+        <$transformModelToEyeWorldAlignedPos($cameraTransform$, $objectTransform$, $modelPos$, eyeWAPos)$>
+        <$clipPos$> = <$cameraTransform$>._projectionViewUntranslated * eyeWAPos;
+    }
+<@endfunc@>
+
+<@func transformModelToClipPos(cameraTransform, objectTransform, modelPos, clipPos)@>
+    { // transformModelToClipPos
+        <$transformModelToMonoClipPos($cameraTransform$, $objectTransform$, $modelPos$, $clipPos$)$>
+        <$transformStereoClipsSpace($cameraTransform$, $clipPos$)$>
+    }
+<@endfunc@>
+
+<@func transformModelToEyeAndClipPos(cameraTransform, objectTransform, modelPos, eyePos, clipPos)@>
+    { // transformModelToEyeAndClipPos
+        vec4 eyeWAPos;
+        <$transformModelToEyeWorldAlignedPos($cameraTransform$, $objectTransform$, $modelPos$, eyeWAPos)$>
+        <$clipPos$> = <$cameraTransform$>._projectionViewUntranslated * eyeWAPos;
+        <$eyePos$> = vec4((<$cameraTransform$>._view * vec4(eyeWAPos.xyz, 0.0)).xyz, 1.0);
+        
+        <$transformStereoClipsSpace($cameraTransform$, $clipPos$)$>
+    }
+<@endfunc@>
+
+<@func transformModelToWorldAndEyeAndClipPos(cameraTransform, objectTransform, modelPos, worldPos, eyePos, clipPos)@>
+    { // transformModelToEyeAndClipPos
+        vec4 eyeWAPos;
+        <$transformModelToEyeWorldAlignedPos($cameraTransform$, $objectTransform$, $modelPos$, eyeWAPos)$>
+        <$worldPos$> = vec4(eyeWAPos.xyz + <$cameraTransform$>._viewInverse[3].xyz, 1.0);
+        <$clipPos$> = <$cameraTransform$>._projectionViewUntranslated * eyeWAPos;
+        <$eyePos$> = vec4((<$cameraTransform$>._view * vec4(eyeWAPos.xyz, 0.0)).xyz, 1.0);
+        
+        <$transformStereoClipsSpace($cameraTransform$, $clipPos$)$>
+    }
+<@endfunc@>
+
+<@func transformModelToEyePos(cameraTransform, objectTransform, modelPos, eyePos)@>
+    { // transformModelToEyePos
+        vec4 eyeWAPos;
+        <$transformModelToEyeWorldAlignedPos($cameraTransform$, $objectTransform$, $modelPos$, eyeWAPos)$>
+        <$eyePos$> = vec4((<$cameraTransform$>._view * vec4(eyeWAPos.xyz, 0.0)).xyz, 1.0);
+    }
+<@endfunc@>
+
+
+<@func transformWorldToClipPos(cameraTransform, worldPos, clipPos)@>
+    { // transformWorldToClipPos
+        vec4 eyeWAPos = <$worldPos$> - vec4(<$cameraTransform$>._viewInverse[3].xyz, 0.0);
+        <$clipPos$> = <$cameraTransform$>._projectionViewUntranslated * eyeWAPos;
+
+        <$transformStereoClipsSpace($cameraTransform$, $clipPos$)$>
+    }
+<@endfunc@>
+
+<@func transformModelToWorldPos(objectTransform, modelPos, worldPos)@>
+    { // transformModelToWorldPos
+        <$worldPos$> = (<$objectTransform$>._model * <$modelPos$>);
+    }
+<@endfunc@>
+
+<@func transformModelToWorldDir(cameraTransform, objectTransform, modelDir, worldDir)@>
+    { // transformModelToWorldDir
+        vec3 mr0 = <$objectTransform$>._modelInverse[0].xyz;
+        vec3 mr1 = <$objectTransform$>._modelInverse[1].xyz;
+        vec3 mr2 = <$objectTransform$>._modelInverse[2].xyz;
+        <$worldDir$> = vec3(dot(mr0, <$modelDir$>), dot(mr1, <$modelDir$>), dot(mr2, <$modelDir$>));
+    }
+<@endfunc@>
+
+<@func transformModelToEyeDir(cameraTransform, objectTransform, modelDir, eyeDir)@>
+    { // transformModelToEyeDir
+        vec3 mr0 = vec3(<$objectTransform$>._modelInverse[0].x, <$objectTransform$>._modelInverse[1].x, <$objectTransform$>._modelInverse[2].x);
+        vec3 mr1 = vec3(<$objectTransform$>._modelInverse[0].y, <$objectTransform$>._modelInverse[1].y, <$objectTransform$>._modelInverse[2].y);
+        vec3 mr2 = vec3(<$objectTransform$>._modelInverse[0].z, <$objectTransform$>._modelInverse[1].z, <$objectTransform$>._modelInverse[2].z);
+
+        vec3 mvc0 = vec3(dot(<$cameraTransform$>._viewInverse[0].xyz, mr0), dot(<$cameraTransform$>._viewInverse[0].xyz, mr1), dot(<$cameraTransform$>._viewInverse[0].xyz, mr2));
+        vec3 mvc1 = vec3(dot(<$cameraTransform$>._viewInverse[1].xyz, mr0), dot(<$cameraTransform$>._viewInverse[1].xyz, mr1), dot(<$cameraTransform$>._viewInverse[1].xyz, mr2));
+        vec3 mvc2 = vec3(dot(<$cameraTransform$>._viewInverse[2].xyz, mr0), dot(<$cameraTransform$>._viewInverse[2].xyz, mr1), dot(<$cameraTransform$>._viewInverse[2].xyz, mr2));
+
+        <$eyeDir$> = vec3(dot(mvc0, <$modelDir$>), dot(mvc1, <$modelDir$>), dot(mvc2, <$modelDir$>));
+    }
+<@endfunc@>
+
+<@func transformEyeToWorldDir(cameraTransform, eyeDir, worldDir)@>
+    { // transformEyeToWorldDir
+        <$worldDir$> = vec3(<$cameraTransform$>._viewInverse * vec4(<$eyeDir$>.xyz, 0.0));
+    }
+<@endfunc@>
+
+<@func transformClipToEyeDir(cameraTransform, clipPos, eyeDir)@>
+    { // transformClipToEyeDir
+        <$eyeDir$> = vec3(<$cameraTransform$>._projectionInverse * vec4(<$clipPos$>.xyz, 1.0)); // Must be 1.0 here
+    }
+<@endfunc@>
+
+<@func transformEyeToClipPos(cameraTransform, eyePos, clipPos)@>
+    { // transformEyeToClipPos
+        <$clipPos$> = <$cameraTransform$>._projection * vec4(<$eyePos$>.xyz, 1.0);
+
+        <$transformStereoClipsSpace($cameraTransform$, $clipPos$)$>
+    }
+<@endfunc@>
+
+<@endif@>

@@ -1,0 +1,109 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//
+//  ssao_makeOcclusion.frag
+//
+//  Created by Sam Gateau on 1/1/16.
+//  Copyright 2016 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+<@include ssao.slh@>
+<$declareAmbientOcclusion()$>
+<$declareFetchDepthPyramidMap()$>
+<$declareSamplingDisk()$>
+<$declareEvalObscurance()$>
+
+<$declarePackOcclusionDepth()$>
+
+#define SSAO_HBAO_MAX_RADIUS    300.0
+
+layout(location=0) in vec2 varTexCoord0;
+
+layout(location=0) out vec4 outFragColor;
+
+void main(void) {
+    // Pixel being shaded
+    vec2 fragCoord = gl_FragCoord.xy; 
+    ivec2 fragPixelPos = ivec2(fragCoord.xy);
+    vec2 fragUVPos = varTexCoord0;
+
+#if SSAO_USE_QUAD_SPLIT
+    vec3 fragNormalES = getNormalEyeAtUV(fragUVPos, 0.0);
+#endif
+
+    // Stereo side info based on the real viewport size of this pass
+    vec2 sideDepthSize = getDepthTextureSideSize(0);
+    ivec2 sideOcclusionSize;
+    if (isHorizonBased()) {
+        sideOcclusionSize = ivec2( getOcclusionSplitSideSize() );
+    } else {
+        sideOcclusionSize = ivec2( getOcclusionSideSize() );
+    }
+
+    ivec4 side = getStereoSideInfoFromWidth(fragPixelPos.x, sideOcclusionSize.x);
+    // From now on, fragUVPos is the UV pos in the side
+    fragUVPos = getSideUVFromFramebufferUV(side, fragUVPos);
+    fragUVPos = snapToTexel(fragUVPos, sideDepthSize);
+
+    // The position and normal of the pixel fragment in Eye space
+    vec2 deltaDepthUV = vec2(2.0) / sideDepthSize;
+    vec3 fragPositionES = buildPosition(side, fragUVPos);
+#if !SSAO_USE_QUAD_SPLIT
+    vec3 fragNormalES = buildNormal(side, fragUVPos, fragPositionES, deltaDepthUV);
+#endif
+
+    float occlusion = 1.0;
+
+    if (fragPositionES.z > (1.0-getPosLinearDepthFar())) {
+        // Choose the screen-space sample radius
+        float diskPixelRadius = evalDiskRadius(fragPositionES.z, sideDepthSize);
+        if (isHorizonBased()) {
+            diskPixelRadius = min(diskPixelRadius, SSAO_HBAO_MAX_RADIUS);
+        }
+
+        // Let's make noise 
+        float randomPatternRotationAngle = 0.0;
+
+        // Accumulate the obscurance for each samples
+        float obscuranceSum = 0.0;
+        int numSamples = int(getNumSamples());
+        float invNumSamples = getInvNumSamples();
+
+        if (isHorizonBased()) {
+            randomPatternRotationAngle = getAngleDithering(fragPixelPos);
+
+            for (int i = 0; i < numSamples; ++i) {
+                vec3 deltaTap = getUnitTapLocation(i, 1.0, randomPatternRotationAngle, PI);
+                obscuranceSum += evalVisibilityHBAO(side, fragUVPos, deltaDepthUV, deltaTap.xy, diskPixelRadius, fragPositionES, fragNormalES);
+            }
+            obscuranceSum *= invNumSamples;
+#if HBAO_USE_COS_ANGLE
+            obscuranceSum = 1.0 - obscuranceSum * getObscuranceScaling();
+#else
+            obscuranceSum = mix(1.0, obscuranceSum, getObscuranceScaling());
+#endif
+        } else {
+            // Steps are in the depth texture resolution
+            vec2 depthTexFragPixelPos = fragUVPos * sideDepthSize;
+
+            randomPatternRotationAngle = getAngleDitheringPixelPos(fragPixelPos) + getAngleDitheringSplit();
+
+            for (int i = 0; i < numSamples; ++i) {
+                vec3 tap = getTapLocationClampedSSAO(i, randomPatternRotationAngle, diskPixelRadius, depthTexFragPixelPos, sideDepthSize);
+                vec2 tapUV = fragUVPos + tap.xy * deltaDepthUV;
+                vec2 tapMipZ = fetchTap(side, tapUV, tap.z);
+                vec3 tapPositionES = evalEyePositionFromZeye(side.x, tapMipZ.y, tapUV);
+                obscuranceSum += float(tap.z > 0.0) * evalVisibilitySSAO(fragPositionES, fragNormalES, tapPositionES);
+            }
+            obscuranceSum *= invNumSamples;
+            obscuranceSum = 1.0 - obscuranceSum * getObscuranceScaling();
+        }
+
+        occlusion = clamp(obscuranceSum, 0.0, 1.0);
+    }
+    outFragColor = packOcclusionOutput(occlusion, fragPositionES.z, fragNormalES);
+}

@@ -1,0 +1,176 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//
+//  texture_particle.vert
+//
+//  Copyright 2015 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+<@include gpu/Transform.slh@>
+<@include gpu/Noise.slh@>
+
+<$declareStandardTransform()$>
+
+struct Radii {
+    float start;
+    float middle;
+    float finish;
+    float spread;
+};
+struct Colors {
+    vec4 start;
+    vec4 middle;
+    vec4 finish;
+    vec4 spread;
+};
+struct Spin {
+    float start;
+    float middle;
+    float finish;
+    float spread;
+};
+
+struct ParticleUniforms {
+    Radii radius;
+    Colors color;
+    Spin spin;
+    float lifespan;
+    int rotateWithEntity;
+    vec2 spare;
+};
+
+LAYOUT_STD140(binding=0) uniform particleBuffer {
+    ParticleUniforms particle;
+};
+
+layout(location=0) in vec3 inPosition;
+layout(location=2) in vec2 inColor; // This is actual Lifetime + Seed
+
+layout(location=0) out vec4 varColor;
+layout(location=1) out vec2 varTexcoord;
+
+float bezierInterpolate(float y1, float y2, float y3, float u) {
+    // https://en.wikipedia.org/wiki/Bezier_curve
+    return (1.0 - u) * (1.0 - u) * y1 + 2.0 * (1.0 - u) * u * y2 + u * u * y3;
+}
+
+float interpolate3Points(float y1, float y2, float y3, float u) {
+    // Makes the interpolated values intersect the middle value.
+
+    if ((u <= 0.5f && y1 == y2) || (u >= 0.5f && y2 == y3)) {
+        // Flat line.
+        return y2;
+    }
+
+    float halfSlope;
+    if ((y2 >= y1 && y2 >= y3) || (y2 <= y1 && y2 <= y3)) {
+        // U or inverted-U shape.
+        // Make the slope at y2 = 0, which means that the control points half way between the value points have the value y2.
+        halfSlope = 0.0f;
+
+    } else {
+        // L or inverted and/or mirrored L shape.
+        // Make the slope at y2 be the slope between y1 and y3, up to a maximum of double the minimum of the slopes between y1
+        // and y2, and y2 and y3. Use this slope to calculate the control points half way between the value points.
+        // Note: The maximum ensures that the control points and therefore the interpolated values stay between y1 and y3.
+        halfSlope = (y3 - y1) / 2.0f;
+        float slope12 = y2 - y1;
+        float slope23 = y3 - y2;
+
+        {
+            float check = float(abs(halfSlope) > abs(slope12));
+            halfSlope = mix(halfSlope, slope12, check);
+            halfSlope = mix(halfSlope, slope23, (1.0 - check) * float(abs(halfSlope) > abs(slope23)));
+        }
+    }
+
+    float stepU = step(0.5f, u);  // 0.0 if u < 0.5, 1.0 otherwise.
+    float slopeSign = 2.0f * stepU - 1.0f; // -1.0 if u < 0.5, 1.0 otherwise
+    float start = (1.0f - stepU) * y1 + stepU * y2;  // y1 if u < 0.5, y2 otherwise
+    float middle = y2 + slopeSign * halfSlope;
+    float finish = (1.0f - stepU) * y2 + stepU * y3; // y2 if u < 0.5, y3 otherwise
+    float v = 2.0f * u - step(0.5f, u);  // 0.0-0.5 -> 0.0-1.0 and 0.5-1.0 -> 0.0-1.0
+    return bezierInterpolate(start, middle, finish, v);
+}
+
+vec4 interpolate3Vec4(vec4 y1, vec4 y2, vec4 y3, float u) {
+    return vec4(interpolate3Points(y1.x, y2.x, y3.x, u),
+                interpolate3Points(y1.y, y2.y, y3.y, u),
+                interpolate3Points(y1.z, y2.z, y3.z, u),
+                interpolate3Points(y1.w, y2.w, y3.w, u));
+}
+
+const int NUM_VERTICES_PER_PARTICLE = 4;
+const vec2 TEX_COORDS[NUM_VERTICES_PER_PARTICLE] = vec2[NUM_VERTICES_PER_PARTICLE](
+    vec2(-1.0, 0.0),
+    vec2(-1.0, 1.0),
+    vec2(0.0, 0.0),
+    vec2(0.0, 1.0)
+);
+
+
+void main(void) {
+    TransformCamera cam = getTransformCamera();
+    TransformObject obj = getTransformObject();
+    
+    // Which icon are we dealing with ?
+    int particleID = gl_VertexID / NUM_VERTICES_PER_PARTICLE;
+    // Which quad vertex pos?
+    int twoTriID = gl_VertexID - particleID * NUM_VERTICES_PER_PARTICLE;
+
+    // Particle properties
+    float age = inColor.x / particle.lifespan;
+    float seed = inColor.y;
+
+    // Pass the texcoord
+    varTexcoord = TEX_COORDS[twoTriID].xy;
+    varColor = interpolate3Vec4(particle.color.start, particle.color.middle, particle.color.finish, age);
+    vec3 colorSpread = 2.0 * vec3(hifi_hash(seed), hifi_hash(seed * 2.0), hifi_hash(seed * 3.0)) - 1.0;
+    varColor.rgb = clamp(varColor.rgb + colorSpread * particle.color.spread.rgb, vec3(0), vec3(1));
+    float alphaSpread = 2.0 * hifi_hash(seed * 4.0) - 1.0;
+    varColor.a = clamp(varColor.a + alphaSpread * particle.color.spread.a, 0.0, 1.0);
+
+    float spin = interpolate3Points(particle.spin.start, particle.spin.middle, particle.spin.finish, age);
+    float spinSpread = 2.0 * hifi_hash(seed * 5.0) - 1.0;
+    spin = spin + spinSpread * particle.spin.spread;
+
+    // anchor point in eye space
+    float radius = interpolate3Points(particle.radius.start, particle.radius.middle, particle.radius.finish, age);
+    float radiusSpread = 2.0 * hifi_hash(seed * 6.0) - 1.0;
+    radius = max(radius + radiusSpread * particle.radius.spread, 0.0);
+
+    // inPosition is in world space
+    vec4 anchorPoint = cam._view * vec4(inPosition, 1.0);
+
+    mat3 view3 = mat3(cam._view);
+    vec3 UP = vec3(0, 1, 0);
+    vec3 modelUpWorld;
+    <$transformModelToWorldDir(cam, obj, UP, modelUpWorld)$>
+    vec3 upWorld = mix(UP, normalize(modelUpWorld), float(particle.rotateWithEntity));
+    vec3 upEye = normalize(view3 * upWorld);
+    vec3 FORWARD = vec3(0, 0, -1);
+    vec3 particleRight = normalize(cross(FORWARD, upEye));
+    vec3 particleUp = cross(particleRight, FORWARD);     // don't need to normalize
+    // This ordering ensures that un-rotated particles render upright in the viewer.
+    vec3 UNIT_QUAD[NUM_VERTICES_PER_PARTICLE] = vec3[NUM_VERTICES_PER_PARTICLE](
+        normalize(-particleRight + particleUp),
+        normalize(-particleRight - particleUp),
+        normalize(particleRight + particleUp),
+        normalize(particleRight - particleUp)
+    );
+    float c = cos(spin);
+    float s = sin(spin);
+    mat4 rotation = mat4(
+        c, -s, 0, 0,
+        s, c, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    );
+    vec4 quadPos = radius * vec4(UNIT_QUAD[twoTriID], 0.0);
+    vec4 eyePos = anchorPoint + rotation * quadPos;
+    <$transformEyeToClipPos(cam, eyePos, gl_Position)$>
+}

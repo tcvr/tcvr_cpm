@@ -1,0 +1,69 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//
+//  local_lights_shading.frag
+//  fragment shader
+//
+//  Created by Sam Gateau on 9/6/2016.
+//  Copyright 2014 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+// Everything about deferred buffer
+<@include DeferredBufferRead.slh@>
+
+<$declareDeferredCurvature()$>
+
+<@include LightLocal.slh@>
+
+<@include render-utils/ShaderConstants.h@>
+
+layout(location=RENDER_UTILS_ATTR_TEXCOORD01) in vec4 _texCoord01;
+#define _texCoord0 _texCoord01.xy
+#define _texCoord1 _texCoord01.zw
+layout(location=0) out vec4 _fragColor;
+
+void main(void) {
+    _fragColor = vec4(0.0);
+
+    // Grab the fragment data from the uv
+    vec2 texCoord = _texCoord0.st;
+
+    DeferredFrameTransform deferredTransform = getDeferredFrameTransform();
+    DeferredFragment frag = unpackDeferredFragment(deferredTransform, texCoord);
+    vec4 fragPosition = frag.position;
+
+    if (frag.mode == FRAG_MODE_UNLIT) {
+        discard;
+    }
+
+    // Frag pos in world
+    mat4 invViewMat = getViewInverse();
+    vec4 fragWorldPos = invViewMat * fragPosition;
+
+    <$fetchClusterInfo(fragWorldPos)$>;
+    if (!hasLocalLights(numLights, clusterPos, dims)) {
+        discard;
+    }
+
+    vec4 midNormalCurvature = vec4(0);
+    vec4 lowNormalCurvature = vec4(0);
+    if (frag.mode == FRAG_MODE_SCATTERING) {
+        unpackMidLowNormalCurvature(texCoord, midNormalCurvature, lowNormalCurvature);
+    }
+
+
+    // Frag to eye vec
+    vec4 fragEyeVector = invViewMat * vec4(-frag.position.xyz, 0.0);
+    vec3 fragEyeDir = normalize(fragEyeVector.xyz);
+    SurfaceData surface = initSurfaceData(frag.roughness, frag.normal, fragEyeDir);
+
+    _fragColor = evalLocalLighting(cluster, numLights, fragWorldPos.xyz, surface, 
+                                   frag.metallic, frag.fresnel, frag.albedo, frag.scattering, 
+                                   midNormalCurvature, lowNormalCurvature, 1.0);
+
+}
+

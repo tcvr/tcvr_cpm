@@ -1,0 +1,186 @@
+<!
+//  DeferredBufferRead.slh
+//  libraries/render-utils/src
+//
+//  Created by Sam Gateau on 5/4/16.
+//  Copyright 2013 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+!>
+<@if not DEFERRED_BUFFER_READ_SLH@>
+<@def DEFERRED_BUFFER_READ_SLH@>
+
+<@include render-utils/ShaderConstants.h@>
+<@include DeferredBuffer.slh@>
+
+// See DeferredShader_MapSlot in DeferredLightingEffect.cpp for constants
+
+// the albedo texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRRED_COLOR) uniform sampler2D albedoMap;
+
+// the normal texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRRED_NORMAL) uniform sampler2D normalMap;
+
+// the specular texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRRED_SPECULAR) uniform sampler2D specularMap;
+
+// the depth texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRRED_DEPTH) uniform sampler2D depthMap;
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRRED_LINEAR_Z_EYE) uniform sampler2D linearZeyeMap;
+
+// the obscurance texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRED_OBSCURANCE) uniform sampler2D obscuranceMap;
+
+// the lighting texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRED_LIGHTING) uniform sampler2D lightingMap;
+
+
+struct DeferredFragment {
+    vec4 position;
+    vec3 normal;
+    float metallic;
+    vec3 albedo;
+    float obscurance;
+    vec3 fresnel;
+    float roughness;
+    int mode;
+    float scattering;
+    float depthVal;
+};
+
+<@if not GETFRESNEL0@>
+<@def GETFRESNEL0@>
+vec3 getFresnelF0(float metallic, vec3 metalF0) {
+    // Enable continuous metallness value by lerping between dielectric
+    // and metal fresnel F0 value based on the "metallic" parameter
+    return mix(vec3(0.03), metalF0, metallic);
+}
+<@endif@>
+
+DeferredFragment unpackDeferredFragmentNoPosition(vec2 texcoord) {
+    vec4 normalVal;
+    vec4 diffuseVal;
+    vec4 specularVal;
+    
+    DeferredFragment frag;
+    frag.depthVal = -1.0;
+    normalVal = texture(normalMap, texcoord);
+    diffuseVal = texture(albedoMap, texcoord);
+    specularVal = texture(specularMap, texcoord);
+    frag.obscurance = texture(obscuranceMap, texcoord).x;
+
+    // Unpack the normal from the map
+    frag.normal = unpackNormal(normalVal.xyz);
+    frag.roughness = normalVal.a;
+
+    // Diffuse color and unpack the mode and the metallicness
+    frag.albedo = diffuseVal.xyz;
+    unpackModeMetallic(diffuseVal.w, frag.mode, frag.metallic);
+
+    frag.obscurance = min(specularVal.w, frag.obscurance);
+    frag.scattering = float(frag.mode == FRAG_MODE_SCATTERING) * specularVal.x;
+    frag.fresnel = getFresnelF0(frag.metallic, diffuseVal.xyz);
+
+    return frag;
+}
+
+
+DeferredFragment unpackDeferredFragmentNoPositionNoAmbient(vec2 texcoord) {
+    vec4 normalVal;
+    vec4 diffuseVal;
+
+    DeferredFragment frag;
+    frag.depthVal = -1.0;
+    normalVal = texture(normalMap, texcoord);
+    diffuseVal = texture(albedoMap, texcoord);
+
+    // Unpack the normal from the map
+    frag.normal = unpackNormal(normalVal.xyz);
+    frag.roughness = normalVal.a;
+
+    // Diffuse color and unpack the mode and the metallicness
+    frag.albedo = diffuseVal.xyz;
+    frag.scattering = 0.0;
+    unpackModeMetallic(diffuseVal.w, frag.mode, frag.metallic);
+
+    //frag.emissive = specularVal.xyz;
+    frag.obscurance = 1.0;
+
+    frag.fresnel = getFresnelF0(frag.metallic, diffuseVal.xyz);
+
+    return frag;
+}
+
+
+<@include DeferredTransform.slh@>
+<$declareDeferredFrameTransform()$>
+
+vec4 unpackDeferredPosition(float depthValue, vec2 texcoord) {
+    float check = float(isStereo());
+    float check2 = check * float(texcoord.x > 0.5);
+    texcoord.x -= check2 * 0.5;
+    int side = int(check2);
+    texcoord.x *= 1.0 + check;
+
+    return vec4(evalEyePositionFromZdb(side, depthValue, texcoord), 1.0);
+}
+
+// This method to unpack position is fastesst
+vec4 unpackDeferredPositionFromZdb(vec2 texcoord) {
+    float Zdb = texture(depthMap, texcoord).x;
+    return unpackDeferredPosition(Zdb, texcoord);
+}
+
+vec4 unpackDeferredPositionFromZeye(vec2 texcoord) {
+    float Zeye = -texture(linearZeyeMap, texcoord).x;
+
+    float check = float(isStereo());
+    float check2 = check * float(texcoord.x > 0.5);
+    texcoord.x -= check2 * 0.5;
+    int side = int(check2);
+    texcoord.x *= 1.0 + check;
+
+    return vec4(evalEyePositionFromZeye(side, Zeye, texcoord), 1.0);
+}
+
+DeferredFragment unpackDeferredFragment(DeferredFrameTransform deferredTransform, vec2 texcoord) {
+    float depthValue = texture(depthMap, texcoord).r;
+
+    DeferredFragment frag = unpackDeferredFragmentNoPosition(texcoord);
+
+    frag.depthVal = depthValue;
+    frag.position = unpackDeferredPosition(frag.depthVal, texcoord);
+
+    return frag;
+}
+
+
+
+<@func declareDeferredCurvature()@>
+
+// the curvature texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRED_CURVATURE) uniform sampler2D curvatureMap;
+
+vec4 fetchCurvature(vec2 texcoord) {
+    return texture(curvatureMap, texcoord);
+}
+
+// the curvature texture
+LAYOUT(binding=RENDER_UTILS_TEXTURE_DEFERRED_DIFFUSED_CURVATURE) uniform sampler2D diffusedCurvatureMap;
+
+vec4 fetchDiffusedCurvature(vec2 texcoord) {
+    return texture(diffusedCurvatureMap, texcoord);
+}
+
+void unpackMidLowNormalCurvature(vec2 texcoord, out vec4 midNormalCurvature, out vec4 lowNormalCurvature) {
+    midNormalCurvature = fetchCurvature(texcoord);
+    lowNormalCurvature = fetchDiffusedCurvature(texcoord);
+    midNormalCurvature.xyz = normalize((midNormalCurvature.xyz - 0.5f) * 2.0f);
+    lowNormalCurvature.xyz = normalize((lowNormalCurvature.xyz - 0.5f) * 2.0f);
+    midNormalCurvature.w = (midNormalCurvature.w * 2.0 - 1.0);
+    lowNormalCurvature.w = (lowNormalCurvature.w * 2.0 - 1.0);
+}
+<@endfunc@>
+
+<@endif@>

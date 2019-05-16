@@ -1,0 +1,50 @@
+<@include gpu/Config.slh@>
+<$VERSION_HEADER$>
+//  Generated on <$_SCRIBE_DATE$>
+//
+//  fxaa_blend.frag
+//  fragment shader
+//
+//  Created by Raffi Bedikian on 8/30/15
+//  Copyright 2015 High Fidelity, Inc.
+//
+//  Distributed under the Apache License, Version 2.0.
+//  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
+//
+
+<@include gpu/ShaderConstants.h@>
+
+layout(location=0) in vec2 varTexCoord0;
+layout(location=0) out vec4 outFragColor;
+
+LAYOUT(binding=0) uniform sampler2D colorTexture;
+
+struct FxaaBlendParams {
+    vec4 sharpenIntensity;
+};
+
+LAYOUT(binding=0) uniform fxaaBlendParamsBuffer {
+    FxaaBlendParams params;
+};
+
+void main(void) {
+    vec4 pixels[9];
+    vec4 sharpenedPixel;
+    pixels[0] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(-1,-1), 0);
+    pixels[1] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(0,-1), 0);
+    pixels[2] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(1,-1), 0);
+
+    pixels[3] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(-1,0), 0);
+    pixels[4] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy), 0);
+    pixels[5] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(1,0), 0);
+
+    pixels[6] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(-1,1), 0);
+    pixels[7] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(0,1), 0);
+    pixels[8] = texelFetch(colorTexture, ivec2(gl_FragCoord.xy)+ivec2(1,1), 0);
+
+    sharpenedPixel = pixels[4]*6.8 - (pixels[1]+pixels[3]+pixels[5]+pixels[7]) - (pixels[0]+pixels[2]+pixels[6]+pixels[8])*0.7;
+
+    vec4 minColor = max(vec4(0), pixels[4]-vec4(0.5));
+    vec4 maxColor = pixels[4]+vec4(0.5);
+    outFragColor = clamp(pixels[4] + sharpenedPixel * params.sharpenIntensity.x, minColor, maxColor);
+}
